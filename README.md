@@ -2,7 +2,7 @@
 
 Microservicio REST de alta velocidad para detección de **Prompt Injections** y **Jailbreaks** utilizando el modelo oficial [`meta-llama/Llama-Prompt-Guard-2-86M`](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M).
 
-Optimizado especialmente para **CPU**, **bajo consumo de memoria RAM**, soporte de **textos de longitud dinámica (> 512 tokens)** mediante ventana deslizante (*sliding window* con solapamiento) y despliegue en **Docker / Coolify** vía GitHub Container Registry (GHCR).
+Optimizado especialmente para **CPU**, **bajo consumo de memoria RAM**, soporte de **textos de longitud dinámica (> 512 tokens)** mediante ventana deslizante (*sliding window* con solapamiento) y despliegue rápido en **Coolify** y **Docker** mediante GitHub Container Registry (GHCR).
 
 ---
 
@@ -15,16 +15,69 @@ Optimizado especialmente para **CPU**, **bajo consumo de memoria RAM**, soporte 
 
 ---
 
-## 🐳 Despliegue con Docker (GHCR)
+## 🚀 Despliegue en Coolify (Docker Compose)
 
-La imagen precompilada y optimizada para CPU está disponible directamente en GitHub Container Registry:
-```text
-ghcr.io/juanjsar93/prompt-guard:latest
+Puedes desplegar este microservicio en **Coolify** en menos de 1 minuto sin necesidad de compilar nada en tu servidor:
+
+### Paso a Paso en Coolify:
+
+1. **Crear el recurso:**
+   * Ve a tu proyecto y entorno en el panel de Coolify.
+   * Haz clic en **+ Add Resource** $\rightarrow$ selecciona **Docker Compose**.
+
+2. **Pegar la configuración Compose:**
+   * En el editor de Docker Compose de Coolify, pega el siguiente contenido:
+
+```yaml
+services:
+  prompt-guard:
+    image: ghcr.io/juanjsar93/prompt-guard:latest
+    container_name: prompt-guard-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - MODEL_ID=meta-llama/Llama-Prompt-Guard-2-86M
+      # Token de Hugging Face (opcional, configúralo si el modelo lo requiere)
+      - HF_TOKEN=
+      # Umbral de detección (0.0 a 1.0)
+      - THRESHOLD=0.5
+      - CHUNK_SIZE=512
+      - STRIDE=64
+      # Hilos de CPU asignados a PyTorch
+      - TORCH_THREADS=4
+      # Cuantización dinámica INT8: actívalo ("true") para reducir el uso de RAM a ~180MB
+      - ENABLE_QUANTIZATION=false
+    volumes:
+      # Volumen persistente para almacenar la caché del modelo
+      - hf_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  hf_cache:
+    name: prompt_guard_hf_cache
 ```
 
-### Opción 1: Ejecutar con Docker CLI (`docker run`)
+3. **Asignar Dominio / Proxy:**
+   * En la pestaña de configuración del servicio en Coolify, define tu dominio (ejemplo: `https://promptguard.tudominio.com`) y asegúrate de apuntarlo al puerto `8000`.
 
-Ejecuta el siguiente comando para iniciar el contenedor persistiendo la caché de Hugging Face:
+4. **Desplegar:**
+   * Haz clic en **Deploy**. Coolify descargará la imagen desde GHCR y el servicio quedará activo con certificado SSL automático y *zero-downtime healthcheck*.
+
+> [!NOTE]
+> Gracias al volumen persistente `prompt_guard_hf_cache`, el modelo de Meta solo se descargará una vez y permanecerá guardado en tu servidor aunque reinicies o actualices el contenedor.
+
+---
+
+## 🐳 Despliegue con Docker
+
+### Opción 1: Ejecutar con Docker CLI (`docker run`)
 
 ```bash
 docker run -d \
@@ -41,32 +94,17 @@ docker run -d \
   ghcr.io/juanjsar93/prompt-guard:latest
 ```
 
-> [!TIP]
-> El volumen persistente `-v prompt_guard_hf_cache:/root/.cache/huggingface` asegura que el modelo solo se descargue la primera vez.
-
 ---
 
-### Opción 2: Ejecutar con Docker Compose
-
-Si tienes el archivo `docker-compose.yml`, inicia el servicio con:
+### Opción 2: Ejecutar con Docker Compose en Servidor Local / VPS
 
 ```bash
+# Iniciar el servicio en segundo plano
 docker compose up -d
-```
 
-Para ver los logs en tiempo real:
-```bash
+# Ver registros y estado
 docker compose logs -f
 ```
-
----
-
-### Opción 3: Despliegue en Coolify
-
-1. En el panel de **Coolify**, haz clic en **+ Add Resource** $\rightarrow$ **Docker Compose**.
-2. Pega el contenido del archivo [`docker-compose.yml`](docker-compose.yml).
-3. *(Opcional)* Si el repositorio de Hugging Face requiere autenticación, añade la variable de entorno `HF_TOKEN`.
-4. Haz clic en **Deploy**. Coolify descargará la imagen desde GHCR y mantendrá activo el healthcheck automático.
 
 ---
 
@@ -136,13 +174,13 @@ docker compose logs -f
 
 ## 🔨 Compilación Local y Publicación en GHCR
 
-Si realizas cambios en `server.py` o en el `Dockerfile` y deseas subir una nueva versión:
+Si realizas modificaciones en el código y deseas publicar una nueva versión:
 
 ```powershell
 # 1. Autenticar en GHCR
 echo <TU_GITHUB_PAT> | docker login ghcr.io -u JuanJSAR93 --password-stdin
 
-# 2. Compilar imagen para arquitectura Linux
+# 2. Compilar imagen para arquitectura Linux (Debian/Ubuntu)
 docker build --platform linux/amd64 -t ghcr.io/juanjsar93/prompt-guard:latest .
 
 # 3. Subir imagen actualizada a GHCR

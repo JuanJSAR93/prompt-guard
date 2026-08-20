@@ -1,0 +1,35 @@
+services:
+  prompt-guard:
+    image: ghcr.io/juanjsar93/prompt-guard:latest
+    # Si deseas compilar localmente en vez de descargar de GHCR, descomenta la siguiente línea:
+    # build: .
+    container_name: prompt-guard-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - MODEL_ID=meta-llama/Llama-Prompt-Guard-2-86M
+      # Configura tu token de Hugging Face si el repositorio lo requiere
+      - HF_TOKEN=
+      # Parámetros de Inferencia y Seguridad
+      - THRESHOLD=0.5
+      - CHUNK_SIZE=512
+      - STRIDE=64
+      # Optimización CPU: hilos de cálculo para PyTorch
+      - TORCH_THREADS=4
+      # Cuantización dinámica INT8: actívalo ("true") para reducir la RAM a ~180MB
+      - ENABLE_QUANTIZATION=false
+    volumes:
+      # Persistencia de la caché de Hugging Face para evitar re-descargas
+      - hf_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  hf_cache:
+    name: prompt_guard_hf_cache

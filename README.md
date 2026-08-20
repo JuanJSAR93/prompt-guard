@@ -2,13 +2,13 @@
 
 Microservicio REST de alta velocidad para detección de **Prompt Injections** y **Jailbreaks** utilizando el modelo oficial [`meta-llama/Llama-Prompt-Guard-2-86M`](https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-86M).
 
-Optimizado especialmente para **CPU**, **bajo consumo de memoria RAM**, soporte de **textos de longitud dinámica (> 512 tokens)** mediante ventana deslizante (*sliding window* con solapamiento) y despliegue rápido en **Coolify** y **Docker** mediante GitHub Container Registry (GHCR).
+Optimizado especialmente para **CPU**, **mínimo consumo de memoria RAM** (incluye **auto-descarga de RAM tras 5 minutos de inactividad**), soporte de **textos de longitud dinámica (> 512 tokens)** mediante ventana deslizante (*sliding window* con solapamiento) y despliegue rápido en **Coolify** y **Docker** mediante GitHub Container Registry (GHCR).
 
 ---
 
 ## 📁 Archivos del Proyecto
 
-* **`server.py`**: Servidor FastAPI con inferencia por lotes, sliding window e inferencia optimizada con `torch.inference_mode()`.
+* **`server.py`**: Servidor FastAPI con inferencia por lotes, sliding window, inferencia optimizada y auto-liberación de RAM por inactividad.
 * **`Dockerfile`**: Imagen ligera (`python:3.12-slim` + PyTorch CPU-only) con healthchecks nativos.
 * **`docker-compose.yml`**: Configuración lista para Coolify / Docker Compose con persistencia de caché de Hugging Face.
 * **`test.py`**: Script de pruebas locales para verificar la salud y realizar escaneos con textos personalizados.
@@ -46,6 +46,8 @@ services:
       - THRESHOLD=0.5
       - CHUNK_SIZE=512
       - STRIDE=64
+      # Auto-descarga de RAM tras 5 min sin uso (300s). Pon 0 para mantener siempre en RAM
+      - IDLE_TIMEOUT_SECONDS=300
       # Hilos de CPU asignados a PyTorch
       - TORCH_THREADS=4
       # Cuantización dinámica INT8: actívalo ("true") para reducir el uso de RAM a ~180MB
@@ -77,7 +79,8 @@ volumes:
    * Haz clic en **Deploy**. Coolify descargará la imagen desde GHCR y el servicio quedará activo con certificado SSL automático y *zero-downtime healthcheck*.
 
 > [!NOTE]
-> Gracias al volumen persistente `prompt_guard_hf_cache`, el modelo de Meta solo se descargará la primera vez y permanecerá guardado en tu servidor aunque reinicies o actualices el contenedor.
+> * **Persistencia:** El modelo de Meta solo se descarga una vez en el volumen `prompt_guard_hf_cache`.
+> * **Auto-liberación de RAM:** Si no recibe peticiones durante 5 minutos (`IDLE_TIMEOUT_SECONDS=300`), el modelo se libera de la RAM bajando el consumo a solo **~60 MB**. Cuando llega una nueva petición, se recarga del disco local en 1 segundo.
 
 ---
 
@@ -94,6 +97,7 @@ docker run -d \
   -e THRESHOLD=0.5 \
   -e CHUNK_SIZE=512 \
   -e STRIDE=64 \
+  -e IDLE_TIMEOUT_SECONDS=300 \
   -e TORCH_THREADS=4 \
   -e ENABLE_QUANTIZATION=false \
   -v prompt_guard_hf_cache:/root/.cache/huggingface \
@@ -124,6 +128,7 @@ docker compose up -d
 | `HF_TOKEN` | Token de acceso de Hugging Face para descargar el modelo de Meta | *(Requerido para Meta)* |
 | `PORT` | Puerto de escucha HTTP | `8000` |
 | `MODEL_ID` | Repositorio del modelo en Hugging Face | `meta-llama/Llama-Prompt-Guard-2-86M` |
+| `IDLE_TIMEOUT_SECONDS` | Segundos de inactividad antes de liberar el modelo de la RAM | `300` *(5 min)* |
 | `THRESHOLD` | Umbral de decisión para clasificar como `MALICIOUS` | `0.5` |
 | `CHUNK_SIZE` | Tamaño máximo de ventana de tokens por bloque | `512` |
 | `STRIDE` | Solapamiento de tokens entre bloques contiguos | `64` |
@@ -142,6 +147,9 @@ docker compose up -d
     "status": "ok",
     "model": "meta-llama/Llama-Prompt-Guard-2-86M",
     "device": "cpu",
+    "model_loaded_in_ram": true,
+    "idle_timeout_seconds": 300,
+    "seconds_until_unload": 285,
     "quantization": false,
     "torch_threads": 4
   }

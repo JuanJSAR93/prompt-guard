@@ -1,4 +1,8 @@
 import os
+import gc
+import time
+import asyncio
+import threading
 from typing import List, Optional
 from contextlib import asynccontextmanager
 
@@ -17,6 +21,10 @@ DEFAULT_CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
 DEFAULT_STRIDE = int(os.getenv("STRIDE", "64"))
 ENABLE_QUANTIZATION = os.getenv("ENABLE_QUANTIZATION", "false").lower() in ("true", "1", "yes")
 
+# Auto-descarga por inactividad (300 segundos = 5 minutos por defecto)
+# 0 o negativo desactiva la descarga automática
+IDLE_TIMEOUT_SECONDS = int(os.getenv("IDLE_TIMEOUT_SECONDS", "300"))
+
 # Configurar hilos de CPU para PyTorch
 CPU_CORES = os.cpu_count() or 4
 TORCH_THREADS = int(os.getenv("TORCH_THREADS", str(min(CPU_CORES, 4))))
@@ -25,58 +33,99 @@ torch.set_num_threads(TORCH_THREADS)
 # Selección de dispositivo
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Variables globales para modelo y tokenizador
+# Variables globales para modelo, tokenizador y control de inactividad
 tokenizer = None
 model = None
 malicious_class_index = 1
+last_active_time = time.time()
+model_lock = threading.Lock()
 
 
 def load_model_and_tokenizer():
-    global tokenizer, model, malicious_class_index
-    print(f"[*] Cargando tokenizador para: {MODEL_ID}...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+    global tokenizer, model, malicious_class_index, last_active_time
+    with model_lock:
+        if model is not None:
+            return
 
-    print(f"[*] Cargando modelo en dispositivo: {DEVICE}...")
-    loaded_model = AutoModelForSequenceClassification.from_pretrained(
-        MODEL_ID,
-        token=HF_TOKEN
-    )
+        print(f"[*] Cargando tokenizador para: {MODEL_ID}...")
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
 
-    # Identificar el índice de la clase MALICIOUS en id2label
-    id2label = getattr(loaded_model.config, "id2label", {0: "BENIGN", 1: "MALICIOUS"})
-    for idx, label_name in id2label.items():
-        if "MALICIOUS" in str(label_name).upper() or "INJECTION" in str(label_name).upper():
-            malicious_class_index = int(idx)
-            break
-
-    # Optimización: Cuantización Dinámica INT8 en CPU si está habilitada
-    if DEVICE.type == "cpu" and ENABLE_QUANTIZATION:
-        print("[*] Aplicando Cuantización Dinámica INT8 para CPU (menor uso de RAM)...")
-        loaded_model = torch.ao.quantization.quantize_dynamic(
-            loaded_model,
-            {torch.nn.Linear},
-            dtype=torch.qint8
+        print(f"[*] Cargando modelo en dispositivo: {DEVICE}...")
+        loaded_model = AutoModelForSequenceClassification.from_pretrained(
+            MODEL_ID,
+            token=HF_TOKEN
         )
 
-    loaded_model.to(DEVICE)
-    loaded_model.eval()
-    model = loaded_model
-    print(f"[✓] Modelo listo. Índice clase maliciosa: {malicious_class_index} ({id2label.get(malicious_class_index, 'MALICIOUS')})")
+        # Identificar el índice de la clase MALICIOUS en id2label
+        id2label = getattr(loaded_model.config, "id2label", {0: "BENIGN", 1: "MALICIOUS"})
+        for idx, label_name in id2label.items():
+            if "MALICIOUS" in str(label_name).upper() or "INJECTION" in str(label_name).upper():
+                malicious_class_index = int(idx)
+                break
+
+        # Optimización: Cuantización Dinámica INT8 en CPU si está habilitada
+        if DEVICE.type == "cpu" and ENABLE_QUANTIZATION:
+            print("[*] Aplicando Cuantización Dinámica INT8 para CPU (menor uso de RAM)...")
+            loaded_model = torch.ao.quantization.quantize_dynamic(
+                loaded_model,
+                {torch.nn.Linear},
+                dtype=torch.qint8
+            )
+
+        loaded_model.to(DEVICE)
+        loaded_model.eval()
+        model = loaded_model
+        last_active_time = time.time()
+        print(f"[✓] Modelo listo en RAM. Índice clase maliciosa: {malicious_class_index} ({id2label.get(malicious_class_index, 'MALICIOUS')})")
+
+
+def unload_model():
+    global model, tokenizer
+    with model_lock:
+        if model is not None:
+            print(f"[*] Inactividad detectada (> {IDLE_TIMEOUT_SECONDS}s). Descargando modelo de la memoria RAM...")
+            del model
+            del tokenizer
+            model = None
+            tokenizer = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print("[✓] Modelo descargado. Memoria RAM liberada al sistema operativo.")
+
+
+def ensure_model_loaded():
+    global last_active_time
+    if model is None:
+        load_model_and_tokenizer()
+    last_active_time = time.time()
+
+
+async def idle_cleanup_worker():
+    """Tarea en segundo plano que vigila el tiempo de inactividad"""
+    while True:
+        await asyncio.sleep(15)
+        if model is not None and IDLE_TIMEOUT_SECONDS > 0:
+            elapsed = time.time() - last_active_time
+            if elapsed >= IDLE_TIMEOUT_SECONDS:
+                unload_model()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Carga al inicio
+    # Carga inicial al arranque para verificar archivos y caché
     load_model_and_tokenizer()
+    # Iniciar monitor de inactividad
+    cleanup_task = asyncio.create_task(idle_cleanup_worker())
     yield
-    # Limpieza al apagar
-    pass
+    cleanup_task.cancel()
+    unload_model()
 
 
 app = FastAPI(
     title="Llama Prompt Guard 2 API",
-    description="Microservicio de seguridad para detección de Prompt Injections y Jailbreaks con soporte dinámico de tokens.",
-    version="2.0.0",
+    description="Microservicio de seguridad para detección de Prompt Injections y Jailbreaks con soporte dinámico de tokens y auto-descarga de RAM por inactividad.",
+    version="2.1.0",
     lifespan=lifespan
 )
 
@@ -126,8 +175,8 @@ def scan_text(
     chunk_size: Optional[int] = None,
     stride: Optional[int] = None
 ) -> ScanResponse:
-    if model is None or tokenizer is None:
-        raise HTTPException(status_code=503, detail="Modelo aún no inicializado")
+    # Asegurar que el modelo esté cargado en RAM (Carga perezosa si estaba descargado)
+    ensure_model_loaded()
 
     eff_threshold = threshold if threshold is not None else DEFAULT_THRESHOLD
     eff_chunk_size = chunk_size if chunk_size is not None else DEFAULT_CHUNK_SIZE
@@ -162,7 +211,6 @@ def scan_text(
     # Inferencia optimizada en PyTorch
     with torch.inference_mode():
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-        # Probabilidades Softmax para cada bloque generado
         probs = torch.softmax(outputs.logits, dim=-1)
 
     # Extraer probabilidad de clase MALICIOUS para todos los chunks
@@ -188,10 +236,17 @@ def scan_text(
 # ==========================================
 @app.get("/health")
 def health():
+    is_loaded = model is not None
+    seconds_idle = int(time.time() - last_active_time) if is_loaded else 0
+    seconds_left = max(0, IDLE_TIMEOUT_SECONDS - seconds_idle) if is_loaded and IDLE_TIMEOUT_SECONDS > 0 else None
+
     return {
         "status": "ok",
         "model": MODEL_ID,
         "device": str(DEVICE),
+        "model_loaded_in_ram": is_loaded,
+        "idle_timeout_seconds": IDLE_TIMEOUT_SECONDS,
+        "seconds_until_unload": seconds_left,
         "quantization": ENABLE_QUANTIZATION,
         "torch_threads": TORCH_THREADS
     }

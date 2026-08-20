@@ -1,8 +1,6 @@
 services:
   prompt-guard:
     image: ghcr.io/juanjsar93/prompt-guard:latest
-    # Si deseas compilar localmente en vez de descargar de GHCR, descomenta la siguiente línea:
-    # build: .
     container_name: prompt-guard-service
     restart: unless-stopped
     ports:
@@ -10,8 +8,9 @@ services:
     environment:
       - PORT=8000
       - MODEL_ID=meta-llama/Llama-Prompt-Guard-2-86M
-      # Configura tu token de Hugging Face si el repositorio lo requiere
-      - HF_TOKEN=
+      # Variable de entorno para autenticación en Hugging Face
+      # Configúrala en la pestaña 'Environment Variables' de Coolify o en un archivo .env
+      - HF_TOKEN=${HF_TOKEN}
       # Parámetros de Inferencia y Seguridad
       - THRESHOLD=0.5
       - CHUNK_SIZE=512

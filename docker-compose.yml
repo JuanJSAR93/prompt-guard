@@ -9,12 +9,14 @@ services:
       - PORT=8000
       - MODEL_ID=meta-llama/Llama-Prompt-Guard-2-86M
       # Variable de entorno para autenticación en Hugging Face
-      # Configúrala en la pestaña 'Environment Variables' de Coolify o en un archivo .env
       - HF_TOKEN=${HF_TOKEN}
       # Parámetros de Inferencia y Seguridad
       - THRESHOLD=0.5
       - CHUNK_SIZE=512
       - STRIDE=64
+      # Descarga automática de la memoria RAM tras 5 minutos sin uso (300s)
+      # Configura 0 para mantener siempre en RAM
+      - IDLE_TIMEOUT_SECONDS=300
       # Optimización CPU: hilos de cálculo para PyTorch
       - TORCH_THREADS=4
       # Cuantización dinámica INT8: actívalo ("true") para reducir la RAM a ~180MB

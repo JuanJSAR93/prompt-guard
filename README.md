@@ -11,6 +11,7 @@ Optimizado especialmente para **CPU**, **bajo consumo de memoria RAM**, soporte 
 * **`server.py`**: Servidor FastAPI con inferencia por lotes, sliding window e inferencia optimizada con `torch.inference_mode()`.
 * **`Dockerfile`**: Imagen ligera (`python:3.12-slim` + PyTorch CPU-only) con healthchecks nativos.
 * **`docker-compose.yml`**: Configuración lista para Coolify / Docker Compose con persistencia de caché de Hugging Face.
+* **`test.py`**: Script de pruebas locales para verificar la salud y realizar escaneos con textos personalizados.
 * **`build_and_push.bat`**: Script para compilar y subir la imagen a GitHub Container Registry (GHCR).
 
 ---
@@ -39,8 +40,8 @@ services:
     environment:
       - PORT=8000
       - MODEL_ID=meta-llama/Llama-Prompt-Guard-2-86M
-      # Token de Hugging Face (opcional, configúralo si el modelo lo requiere)
-      - HF_TOKEN=
+      # Variable de entorno para autenticación en Hugging Face
+      - HF_TOKEN=${HF_TOKEN}
       # Umbral de detección (0.0 a 1.0)
       - THRESHOLD=0.5
       - CHUNK_SIZE=512
@@ -64,14 +65,19 @@ volumes:
     name: prompt_guard_hf_cache
 ```
 
-3. **Asignar Dominio / Proxy:**
-   * En la pestaña de configuración del servicio en Coolify, define tu dominio (ejemplo: `https://promptguard.tudominio.com`) y asegúrate de apuntarlo al puerto `8000`.
+3. **Configurar la Variable de Entorno (`HF_TOKEN`):**
+   * En la pestaña **Environment Variables** de Coolify, añade:
+     * **Key:** `HF_TOKEN`
+     * **Value:** `tu_token_de_huggingface`
 
-4. **Desplegar:**
+4. **Asignar Dominio / Proxy:**
+   * En la pestaña de configuración del servicio en Coolify, define tu dominio (ejemplo: `https://promptguard.tudominio.com`) apuntando al puerto `8000`.
+
+5. **Desplegar:**
    * Haz clic en **Deploy**. Coolify descargará la imagen desde GHCR y el servicio quedará activo con certificado SSL automático y *zero-downtime healthcheck*.
 
 > [!NOTE]
-> Gracias al volumen persistente `prompt_guard_hf_cache`, el modelo de Meta solo se descargará una vez y permanecerá guardado en tu servidor aunque reinicies o actualices el contenedor.
+> Gracias al volumen persistente `prompt_guard_hf_cache`, el modelo de Meta solo se descargará la primera vez y permanecerá guardado en tu servidor aunque reinicies o actualices el contenedor.
 
 ---
 
@@ -83,6 +89,7 @@ volumes:
 docker run -d \
   --name prompt-guard-service \
   -p 8000:8000 \
+  -e HF_TOKEN="tu_token_de_huggingface" \
   -e PORT=8000 \
   -e THRESHOLD=0.5 \
   -e CHUNK_SIZE=512 \
@@ -98,12 +105,14 @@ docker run -d \
 
 ### Opción 2: Ejecutar con Docker Compose en Servidor Local / VPS
 
-```bash
-# Iniciar el servicio en segundo plano
-docker compose up -d
+Crea un archivo `.env` en el mismo directorio con tu token:
+```env
+HF_TOKEN=tu_token_de_huggingface
+```
 
-# Ver registros y estado
-docker compose logs -f
+Y luego inicia el servicio:
+```bash
+docker compose up -d
 ```
 
 ---
@@ -112,9 +121,9 @@ docker compose logs -f
 
 | Variable | Descripción | Valor por Defecto |
 | :--- | :--- | :--- |
+| `HF_TOKEN` | Token de acceso de Hugging Face para descargar el modelo de Meta | *(Requerido para Meta)* |
 | `PORT` | Puerto de escucha HTTP | `8000` |
 | `MODEL_ID` | Repositorio del modelo en Hugging Face | `meta-llama/Llama-Prompt-Guard-2-86M` |
-| `HF_TOKEN` | Token de acceso para Hugging Face (si se requiere) | *(Vacío)* |
 | `THRESHOLD` | Umbral de decisión para clasificar como `MALICIOUS` | `0.5` |
 | `CHUNK_SIZE` | Tamaño máximo de ventana de tokens por bloque | `512` |
 | `STRIDE` | Solapamiento de tokens entre bloques contiguos | `64` |
@@ -151,9 +160,9 @@ docker compose logs -f
   ```json
   {
     "label": "MALICIOUS",
-    "score": 0.9842,
+    "score": 0.9997,
     "blocked": true,
-    "malicious_score": 0.9842,
+    "malicious_score": 0.9997,
     "chunks_analyzed": 1
   }
   ```
